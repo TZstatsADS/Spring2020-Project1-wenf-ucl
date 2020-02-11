@@ -1,0 +1,231 @@
+---
+title: "Project 1 Data Story: Message in the Music"
+author: "Wenfeng Lyu (wl2733)"
+date: "08/02/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Introduction 
+
+As Ransom said in his research paper, music has long been an effective way to communicate to the masses, and lyrics have played a massive role in delivering this communication.Thus, this project is aimed to research deeper in the lyrics to see whether we can identify the music's genre through its lyrics, as well as the music's sentiment. Let's start to decrypt messages what the music wants to send! 
+
+
+```{r echo=FALSE, fig.cap="", out.width = '30%'}
+knitr::include_graphics("https://dunderbeck1980.files.wordpress.com/2013/03/message-of-music-head-2.jpg")
+```
+
+
+```{r load libraries, warning=FALSE, message=FALSE,include=FALSE}
+library(tidyverse)
+library(tidytext)
+library(plotly)
+library(DT)
+library(tm)
+library(data.table)
+library(scales)
+library(wordcloud2)
+library(gridExtra)
+library(ngram)
+library(shiny) 
+library(ggplot2)
+library(ggridges)
+library(reshape2)
+library(wordcloud)
+```
+
+
+
+```{r version, echo=FALSE}
+setwd("~/Desktop/Spring2020-Project1-wenf-ucl/output")
+```
+
+### Load the processed lyrics data along with artist information
+
+We use the processed data and artist information for our analysis.
+
+```{r load data, warning=FALSE, message=FALSE}
+# load lyrics data
+load('../output/processed_lyrics.RData') 
+# load artist information
+dt_artist <- fread('../data/artists.csv') 
+```
+
+Firstly, we will start with excluding songs missing information. In this project, we only focus on songs with lyrics and a specific genre, so we removed the song' genre falls into catagories of "Not Available" and "Other". Moreover, we also excluded the genres are "Electronic" and "Jazz" because these two types of songs are not lyrics-heavy. Now, let's produce some bar graphs to get a sense of what is in our mountain of lyric corpus:
+
+```{r}
+# Filtering out the information that we don't need for analysis
+lyrics_new<-dt_lyrics%>%
+  filter(genre!="Not Available" & genre!= "Other"&genre!= "Jazz"&genre!= "Electronic",year>2004)
+head(lyrics_new,5)
+# Plot the lyric corpus
+plot_by_year<-lyrics_new%>%
+  group_by(year,genre)%>%
+  summarise("num_of_songs"=n())%>%ggplot()+
+  geom_bar(aes(year,num_of_songs,fill=genre),stat = "identity")+
+  geom_line(aes(year,num_of_songs,color=genre))+
+  labs(x="Year",y="Number of Songs",title = "Genre Breakdown Per Year, 2004 and onwards ")+
+  theme_light()
+plot_by_year
+
+plot_by_type<-lyrics_new%>%
+ ggplot(aes(year,color=genre))+geom_freqpoly(binwidth=300)+
+  labs(x="Year",title = "Song types distribution by year")+theme(plot.title = element_text(hjust = 0.5))+theme_light()
+plot_by_type
+```
+
+From the above plots, it shows the number of songs per year and the proportion that is dedicated to each genre. Rock, Pop, and Metal are the three most dominant genres over the years. Moreover, we can notice that there is a large spike in the years 2006 and 2007, during which the large majority of songs were Rock.
+
+In order to preparing for later analysis, we will start from finding the most common words in all the songs as a whole.
+
+```{r warning=FALSE, echo=FALSE,message=FALSE}
+# create word tibble for analysis
+corpus<- VCorpus(VectorSource(lyrics_new$stemmedwords))
+word_tb<-tidy(corpus)%>% 
+  select(text)%>%mutate(id=row_number())%>% 
+  unnest_tokens(word,text)%>%
+  count(word,sort = TRUE)
+
+# visualize the most freqent used words of all genres
+word_tb_plot<-word_tb %>%
+  filter(n>=44717)%>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  labs(title = "Top 10 most frequent words in all songs") +
+  coord_flip()+
+  theme_light()
+word_tb_plot
+```
+
+The above graph indicates that words are used most frequnetly in all songs such as "love","time","baby". However, for the sake of understanding the emotional contents of words,then we use the sentimental analysis approach.
+
+# Sentimental Analysis
+
+Regarding the sentiment dataset, we use "bing" sentiment lexicon to catagorize words into "positive" and "negative".
+
+```{r}
+# create a sentiment tibble using Bing lexicon
+word_tb1<- data.frame(genre=lyrics_new$genre,tidy(corpus)) %>%
+group_by(genre) %>%
+  mutate(id = row_number()) %>%ungroup()%>%
+  unnest_tokens(word, text)
+
+# bing sentiment lexicon
+bing_word<- word_tb1 %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+# visualize the top 10 most used "positive" and "negative" words
+bing_word_plot<-bing_word %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) + theme_light()+
+  coord_flip()
+bing_word_plot
+```
+
+From the table above, we notice that there are more positive words used than negative words by song writers. Also, the use of the word "Love" is very common than any other words. This indicates that some words might be used by any genres of songs, which can be a bad indicator to identify songs' genres. In order to confirm our guess and figure out what typical words used by differents genres, we need to perform further analysis by genre. 
+
+```{r}
+# create a sentiment tibble using Afinn lexicon
+senti_tb<- word_tb1 %>%
+  count(genre, word, sort = TRUE) %>% 
+  ungroup() %>% 
+  inner_join(get_sentiments("afinn"), by = "word")%>%
+  group_by(genre) %>%
+  summarize(score = sum(value * n) / sum(n))
+
+# visualize sentiments by genre
+senti_tb_plot<-senti_tb%>%
+  mutate(genre = reorder(genre, score)) %>%
+  ggplot(aes(genre, score, fill = score > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() + labs(title = "Sentiments by genre", y="Average sentiment score")+
+  theme_light()
+senti_tb_plot
+
+```
+
+As shown in above table, Hip_Hop and Metal show the most negative emotions among all other genres,while Pop, R&B, and Country have almost the same degree of positive emotions.
+
+```{r}
+# visualize the most influential words contributing to the average sentiment
+influential_plot<-word_tb1 %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  count(genre, word, sentiment, sort = TRUE) %>% 
+  ungroup() %>% 
+  group_by(genre, sentiment) %>% 
+  top_n(6) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, n)) %>% 
+  ggplot(aes(word, n, fill = sentiment)) + 
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~genre, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL,
+       title = "High frequency words by genre") +
+  coord_flip() + theme_light()
+influential_plot
+```
+
+We can conclude that there are several words, such as "love", "die" and "cry", used by many types of songs. Thus, we cannot simply identify the music genre that based on several contributional words to sentiment.
+
+# Word Cloud
+```{r}
+# word cloud ("positive"&"negative" comparison cloud): all genres
+
+w_cloud<-word_tb1 %>% 
+  acast(word ~ genre, fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80","#00B2FF", "red", "#FF0099", "#6600CC","green","yellow"),title.size = 1.5,
+                   max.words = 100)
+w_cloud
+```
+
+After examining the frequent used words in the lyrics, the results are identical to all genres. Thus, it still does not reach our goal if we only look at the analysis above. Here we are going to explore the unique words used from different genres.
+
+# Unique words by genre
+
+```{r}
+# pull out words that are distinct within a genre compared to the rest of the dataset
+tf_idf_words2 <- word_tb1 %>% 
+  count(word, genre, sort = TRUE) %>%
+  bind_tf_idf(word, genre, n) %>%
+  arrange(desc(tf_idf)) %>% group_by(genre)%>%
+  top_n(12)%>%ungroup()
+```
+
+
+```{r}
+# visualize unique words by genre
+ggplot(tf_idf_words2, aes(x = reorder(word, n), y = n, fill = genre)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~genre, scales = "free") + labs(title = "")+labs(title = "Unique words by genre")+
+  coord_flip()+
+  theme_light()
+```
+
+As we can see from the above, the unique words of all genres seem not be very representative of that kind. So it is difficult for us to identify specific words belonging to which genre. On the other hand, we can conclude that the lyrics is very subjective product, so it provide us with various unique music experience.   
+
+# Conclusion
+
+Even though it is hard to identify the music genre by its lyrics, we will still have thoughts about what kind they are by the sentiment. For example, when we hear the song is full of positive emtions, based on previous analysis, we might think that it belongs to either Pop, R&B, or Country. Meanwhile, we will least likely to catogorize it as Hip-Hop (the most negative genre).
+
+# References:
+
+https://repository.upenn.edu/cgi/viewcontent.cgi?article=1094&context=mapp_capstone
+
+https://www.tidytextmining.com/sentiment.html
+
+https://www.storybench.org/a-data-history-of-popular-hip-hop/
+
+https://towardsdatascience.com/text-analysis-of-successful-song-lyrics-e41a4ccb26f5
+
